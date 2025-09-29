@@ -32,6 +32,8 @@ class FilmziBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
         self.application.add_handler(CommandHandler("stats", self.stats_command))
+        self.application.add_handler(CommandHandler("debug", self.debug_command))
+        self.application.add_handler(CommandHandler("searchdb", self.search_db_command))
         
         # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search))
@@ -104,16 +106,77 @@ To subscribe, contact @your_admin_username"""
         cursor.execute('SELECT COUNT(*) FROM users')
         total_users = cursor.fetchone()[0]
         
+        # Get recent movies
+        cursor.execute('SELECT title FROM movies ORDER BY id DESC LIMIT 3')
+        recent_movies = [row[0] for row in cursor.fetchall()]
+        
         stats_text = f"""📊 <b>Filmzi Bot Statistics</b>
 
 🎬 Total Movies: <b>{total_movies}</b>
 👥 Total Users: <b>{total_users}</b>
 ⚡ Status: <b>Online</b>
-🆓 Version: <b>Free</b>
 
-💡 <i>Use /plan to upgrade to premium</i>"""
+<b>Recent Movies:</b>
+"""
+        for i, movie in enumerate(recent_movies, 1):
+            stats_text += f"{i}. {movie}\n"
+        
+        stats_text += "\n💡 <i>Use /plan to upgrade to premium</i>"
         
         await update.message.reply_text(stats_text, parse_mode='HTML')
+    
+    async def debug_command(self, update: Update, context: CallbackContext):
+        """Debug command to check database status"""
+        cursor = db.conn.cursor()
+        
+        # Get all movies
+        cursor.execute('SELECT id, title, file_size, quality, year FROM movies ORDER BY id DESC LIMIT 10')
+        movies = cursor.fetchall()
+        
+        debug_text = f"🔧 <b>Debug Information</b>\n\n"
+        debug_text += f"📁 Total Movies: {len(movies)}\n\n"
+        
+        if movies:
+            debug_text += "<b>Recent Movies in DB:</b>\n"
+            for movie in movies:
+                movie_id, title, file_size, quality, year = movie
+                debug_text += f"• {title} ({year}) - {quality} - {file_size}\n"
+        else:
+            debug_text += "❌ No movies found in database!\n"
+            debug_text += "Check if channel monitor is running and can access your channel."
+        
+        await update.message.reply_text(debug_text, parse_mode='HTML')
+    
+    async def search_db_command(self, update: Update, context: CallbackContext):
+        """Search the database directly"""
+        if not context.args:
+            await update.message.reply_text("Usage: /searchdb <movie_name>")
+            return
+        
+        query = ' '.join(context.args)
+        cursor = db.conn.cursor()
+        
+        cursor.execute('''
+            SELECT * FROM movies 
+            WHERE title LIKE ? 
+            ORDER BY id DESC
+        ''', (f'%{query}%',))
+        
+        results = cursor.fetchall()
+        
+        if not results:
+            await update.message.reply_text(f"❌ No results in DB for: <b>{query}</b>", parse_mode='HTML')
+            return
+        
+        response_text = f"🔍 <b>Database Results for:</b> {query}\n\n"
+        
+        for movie in results[:5]:
+            movie_id, title, file_id, file_size, quality, year, created_at = movie
+            response_text += f"🎬 <b>{title}</b>\n"
+            response_text += f"   📊 {quality} | 💾 {file_size} | 🗓️ {year}\n"
+            response_text += f"   🆔 {movie_id}\n\n"
+        
+        await update.message.reply_text(response_text, parse_mode='HTML')
     
     async def handle_search(self, update: Update, context: CallbackContext):
         query = update.message.text
@@ -126,8 +189,20 @@ To subscribe, contact @your_admin_username"""
         results = db.search_movies(query)
         
         if not results:
+            # Try fuzzy search
+            cursor = db.conn.cursor()
+            cursor.execute('''
+                SELECT * FROM movies 
+                WHERE title LIKE ? 
+                ORDER BY id DESC
+            ''', (f'%{query}%',))
+            results = cursor.fetchall()
+        
+        if not results:
             await update.message.reply_text(
-                f"❌ No results found for: <b>{query}</b>\n\nTry with different keywords or check the spelling.",
+                f"❌ No results found for: <b>{query}</b>\n\n"
+                f"Try with different keywords or check the spelling.\n"
+                f"Use /debug to check database status.",
                 parse_mode='HTML'
             )
             return
@@ -177,7 +252,7 @@ To subscribe, contact @your_admin_username"""
         movie = cursor.fetchone()
         
         if not movie:
-            await query.edit_message_text("❌ Movie not found!")
+            await query.edit_message_text("❌ Movie not found in database!")
             return
         
         movie_id, title, file_id, file_size, quality, year, created_at = movie
@@ -213,7 +288,7 @@ To subscribe, contact @your_admin_username"""
         except Exception as e:
             logger.error(f"Error sending file: {e}")
             await query.edit_message_text(
-                "❌ Error sending file. Please try again later."
+                f"❌ Error sending file: {str(e)}\n\nPlease try again later."
             )
     
     async def stats_callback(self, query):
