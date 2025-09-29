@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import sqlite3
 from telegram import (
     Update, 
     InlineKeyboardButton, 
@@ -18,6 +19,7 @@ from telegram.ext import (
 )
 import aiohttp
 from aiohttp import web
+import threading
 
 from config import Config
 from database import Database
@@ -44,7 +46,7 @@ class FilmziBot:
             user = update.effective_user
             
             # Add user to database
-            await self.db.add_user(
+            self.db.add_user(
                 user.id, 
                 user.username, 
                 user.first_name, 
@@ -117,7 +119,7 @@ For issues contact @your_admin
             await update.message.reply_text("💭")
             
             # Search in database
-            results = await self.db.search_movies(query, self.config.MAX_RESULTS)
+            results = self.db.search_movies(query, self.config.MAX_RESULTS)
             
             if not results:
                 await search_msg.edit_text(
@@ -191,7 +193,10 @@ For issues contact @your_admin
                 
         except Exception as e:
             logger.error(f"Error in button handler: {e}")
-            await query.edit_message_text("🚫 An error occurred. Please try again.")
+            try:
+                await query.edit_message_text("🚫 An error occurred. Please try again.")
+            except:
+                pass
     
     async def show_main_menu(self, query):
         """Show main menu"""
@@ -233,13 +238,13 @@ We accept:
     
     async def send_movie_details(self, query, movie_id: int):
         """Send movie details with quality options"""
-        movie = await self.db.get_movie_by_id(movie_id)
+        movie = self.db.get_movie_by_id(movie_id)
         if not movie:
             await query.edit_message_text("❌ Movie not found in database!")
             return
         
         # Get all available qualities for this movie
-        all_movies = await self.db.get_movies_by_name(movie['movie_name'])
+        all_movies = self.db.get_movies_by_name(movie['movie_name'])
         
         text = self.movie_utils.create_movie_caption(movie)
         text += "\n\n**Available Qualities:**"
@@ -262,7 +267,7 @@ We accept:
     
     async def send_download_options(self, query, movie_id: int, quality: str):
         """Send download and streaming options"""
-        movie = await self.db.get_movie_by_id(movie_id)
+        movie = self.db.get_movie_by_id(movie_id)
         if not movie:
             await query.edit_message_text("❌ File not found!")
             return
@@ -308,7 +313,7 @@ We accept:
     
     async def send_all_qualities(self, query, movie_name: str):
         """Send all available qualities for a movie"""
-        movies = await self.db.get_movies_by_name(movie_name)
+        movies = self.db.get_movies_by_name(movie_name)
         
         if not movies:
             await query.edit_message_text("❌ No qualities found for this movie!")
@@ -336,7 +341,7 @@ We accept:
     
     async def show_more_results(self, query, search_query: str):
         """Show more search results"""
-        results = await self.db.search_movies(search_query, 20)
+        results = self.db.search_movies(search_query, 20)
         
         if not results:
             await query.edit_message_text("❌ No more results found!")
@@ -367,11 +372,12 @@ We accept:
     
     def get_main_keyboard(self):
         """Get main menu keyboard"""
+        bot_username = (self.config.BOT_TOKEN or 'bot').split(':')[0]
         keyboard = [
             [InlineKeyboardButton("🎬 Search Movies", switch_inline_query_current_chat="")],
             [InlineKeyboardButton("💎 Premium Plans", callback_data="buy_premium")],
             [InlineKeyboardButton("📞 Contact Admin", url="https://t.me/your_admin")],
-            [InlineKeyboardButton("🤖 Add to Group", url=f"https://t.me/{(self.config.BOT_TOKEN or 'bot').split(':')[0]}?startgroup=true")]
+            [InlineKeyboardButton("🤖 Add to Group", url=f"https://t.me/{bot_username}?startgroup=true")]
         ]
         return InlineKeyboardMarkup(keyboard)
     
@@ -437,6 +443,15 @@ We accept:
 
 def main():
     """Main function to run the bot"""
+    # Check if required environment variables are set
+    required_vars = ['BOT_TOKEN', 'API_ID', 'API_HASH', 'CHANNEL_ID']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+        print("Please set these variables in your Koyeb environment settings.")
+        return
+    
     bot = FilmziBot()
     
     try:
@@ -444,8 +459,10 @@ def main():
         asyncio.run(bot.run())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
+        bot.db.close_connection()
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
+        bot.db.close_connection()
 
 if __name__ == '__main__':
     main()
