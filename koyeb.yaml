@@ -1,0 +1,30 @@
+name: filmzi-bot
+services:
+  - name: filmzi
+    type: WebService
+    image: koyeb/python:3.11
+    ports:
+      - port: 8080
+        http: /
+    env:
+      - name: BOT_TOKEN
+        value: "8416909627:AAFbJM9nQtqqttTnuN1KOkRScR6Fa_Z6cLQ"
+      - name: API_ID
+        value: "20288994"
+      - name: API_HASH
+        value: "d702614912f1ad370a0d18786002adbf"
+      - name: CHANNEL_ID
+        value: "-1002897456594"
+      - name: ADMIN_ID
+        value: "8304706556"
+      - name: PORT
+        value: "8080"
+    regions:
+      - sin
+    routes:
+      - path: /
+    instance:
+      type: nano
+    scaler:
+      min: 1
+      max: 1
