@@ -5,7 +5,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 from database import db
 import asyncio
-import aiohttp
 
 # Load environment variables
 load_dotenv()
@@ -14,7 +13,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
-CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
+CHANNEL_ID = os.getenv('CHANNEL_ID')
 
 # Set up logging
 logging.basicConfig(
@@ -32,6 +31,7 @@ class FilmziBot:
         # Command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("plan", self.plan_command))
+        self.application.add_handler(CommandHandler("stats", self.stats_command))
         
         # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search))
@@ -49,11 +49,22 @@ class FilmziBot:
 I ᴄᴀɴ ᴘʀᴏᴠɪᴅᴇ ᴍᴏᴠɪᴇs ᴊᴜsᴛ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ᴏʀ sᴇɴᴅ ᴍᴏᴠɪᴇ ɴᴀᴍᴇ ᴀɴᴅ ᴇɴᴊᴏʏ
 Nᴇᴇᴅ Pʀᴇᴍɪᴜᴍ 👉🏻 /plan"""
         
-        await update.message.reply_photo(
-            photo='https://ar-hosting.pages.dev/1759107724318.jpg',
-            caption=welcome_text,
-            parse_mode='HTML'
-        )
+        keyboard = [
+            [InlineKeyboardButton("🔍 Search Movies", switch_inline_query_current_chat="")],
+            [InlineKeyboardButton("📊 Stats", callback_data="stats"),
+             InlineKeyboardButton("💎 Premium", callback_data="premium")]
+        ]
+        
+        try:
+            await update.message.reply_photo(
+                photo='https://ar-hosting.pages.dev/1759107724318.jpg',
+                caption=welcome_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Error sending photo: {e}")
+            await update.message.reply_text(welcome_text, parse_mode='HTML')
     
     async def plan_command(self, update: Update, context: CallbackContext):
         plan_text = """🎬 <b>Filmzi Premium Plans</b> 🎬
@@ -82,6 +93,28 @@ To subscribe, contact @your_admin_username"""
         
         await update.message.reply_text(plan_text, parse_mode='HTML')
     
+    async def stats_command(self, update: Update, context: CallbackContext):
+        cursor = db.conn.cursor()
+        
+        # Get total movies count
+        cursor.execute('SELECT COUNT(*) FROM movies')
+        total_movies = cursor.fetchone()[0]
+        
+        # Get total users count
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        
+        stats_text = f"""📊 <b>Filmzi Bot Statistics</b>
+
+🎬 Total Movies: <b>{total_movies}</b>
+👥 Total Users: <b>{total_users}</b>
+⚡ Status: <b>Online</b>
+🆓 Version: <b>Free</b>
+
+💡 <i>Use /plan to upgrade to premium</i>"""
+        
+        await update.message.reply_text(stats_text, parse_mode='HTML')
+    
     async def handle_search(self, update: Update, context: CallbackContext):
         query = update.message.text
         user_id = update.effective_user.id
@@ -100,15 +133,15 @@ To subscribe, contact @your_admin_username"""
             return
         
         # Format results
-        response_text = f"🎬 <b>Search Results for:</b> {query}\n\n"
+        response_text = f"🎬 <b>Search Results for:</b> {query}\n"
+        response_text += f"📁 <b>Total Files:</b> {len(results)}\n"
+        response_text += f"⚡ <b>Result in:</b> 0.5 seconds\n\n"
         
         keyboard = []
         for movie in results[:5]:  # Show first 5 results
             movie_id, title, file_id, file_size, quality, year, created_at = movie
-            response_text += f"📁 <b>{title}</b>\n"
-            response_text += f"   🎞️ Quality: {quality}\n"
-            response_text += f"   💾 Size: {file_size}\n"
-            response_text += f"   🗓️ Year: {year}\n\n"
+            response_text += f"✅ {title} ({year})\n"
+            response_text += f"   🎞️ {quality} | 💾 {file_size}\n\n"
             
             keyboard.append([InlineKeyboardButton(
                 f"📥 Download {quality}",
@@ -132,6 +165,10 @@ To subscribe, contact @your_admin_username"""
         if data.startswith('download_'):
             movie_id = data.split('_')[1]
             await self.send_movie_file(query, movie_id)
+        elif data == 'stats':
+            await self.stats_callback(query)
+        elif data == 'premium':
+            await self.plan_callback(query)
     
     async def send_movie_file(self, query, movie_id):
         # Get movie details from database
@@ -146,7 +183,7 @@ To subscribe, contact @your_admin_username"""
         movie_id, title, file_id, file_size, quality, year, created_at = movie
         
         try:
-            # Forward the movie file from channel
+            # Send the movie file
             await query.message.reply_document(
                 document=file_id,
                 caption=f"""🎬 <b>{title}</b>
@@ -178,8 +215,40 @@ To subscribe, contact @your_admin_username"""
             await query.edit_message_text(
                 "❌ Error sending file. Please try again later."
             )
+    
+    async def stats_callback(self, query):
+        cursor = db.conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM movies')
+        total_movies = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        
+        stats_text = f"""📊 <b>Filmzi Bot Statistics</b>
+
+🎬 Total Movies: <b>{total_movies}</b>
+👥 Total Users: <b>{total_users}</b>
+⚡ Status: <b>Online</b>
+
+💡 <i>Use /plan to upgrade to premium</i>"""
+        
+        await query.edit_message_text(stats_text, parse_mode='HTML')
+    
+    async def plan_callback(self, query):
+        plan_text = """🎬 <b>Filmzi Premium Plans</b> 🎬
+
+<b>✨ Basic Plan</b>
+• Unlimited movie searches
+• HD quality downloads
+• Priority support
+• ₹99/month
+
+To subscribe, contact @your_admin_username"""
+        
+        await query.edit_message_text(plan_text, parse_mode='HTML')
 
     def run(self):
+        logger.info("Starting Filmzi Bot...")
         self.application.run_polling()
 
 if __name__ == '__main__':
