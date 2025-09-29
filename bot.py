@@ -1,331 +1,438 @@
 import os
 import logging
-from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
-from database import db
+import sqlite3
 import asyncio
+import random
+from pyrogram import Client, filters, enums
+from pyrogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    CallbackQuery, Message
+)
+from pyrogram.errors import FloodWait
 
-# Load environment variables
-load_dotenv()
-
-# Configuration
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-API_ID = os.getenv('API_ID')
-API_HASH = os.getenv('API_HASH')
-CHANNEL_ID = os.getenv('CHANNEL_ID')
-
-# Set up logging
+# Configure logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class FilmziBot:
-    def __init__(self):
-        self.application = Application.builder().token(BOT_TOKEN).build()
-        self.setup_handlers()
-    
-    def setup_handlers(self):
-        # Command handlers
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("plan", self.plan_command))
-        self.application.add_handler(CommandHandler("stats", self.stats_command))
-        self.application.add_handler(CommandHandler("debug", self.debug_command))
-        self.application.add_handler(CommandHandler("searchdb", self.search_db_command))
-        
-        # Message handlers
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search))
-        
-        # Callback query handler for inline buttons
-        self.application.add_handler(CallbackQueryHandler(self.handle_callback))
-    
-    async def start_command(self, update: Update, context: CallbackContext):
-        user = update.effective_user
-        db.add_user(user.id, user.username, user.first_name, user.last_name)
-        
-        welcome_text = f"""ʜᴇʏ {user.first_name}, ɢᴏᴏᴅ ᴍᴏʀɴɪɴɢ 🌞
+# Environment variables
+API_ID = int(os.environ.get("API_ID", "0"))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))
+OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 
-ɪ ᴀᴍ ᴛʜᴇ ᴍᴏsᴛ ᴘᴏᴡᴇʀғᴜʟ ᴀᴜᴛᴏ ғɪʟᴛᴇʀ ʙᴏᴛ ᴡɪᴛʜ ᴘʀᴇᴍɪᴜᴍ 
+# Bot instance
+app = Client(
+    "filmzi_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+# Database setup
+def init_db():
+    conn = sqlite3.connect('filmzi.db')
+    c = conn.cursor()
+    
+    # Movies table
+    c.execute('''CREATE TABLE IF NOT EXISTS movies
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  file_id TEXT NOT NULL,
+                  file_name TEXT NOT NULL,
+                  file_size INTEGER,
+                  file_type TEXT,
+                  message_id INTEGER,
+                  UNIQUE(file_id))''')
+    
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY,
+                  first_name TEXT,
+                  username TEXT,
+                  joined_date TEXT)''')
+    
+    conn.commit()
+    conn.close()
+
+# Database functions
+def add_movie(file_id, file_name, file_size, file_type, message_id):
+    try:
+        conn = sqlite3.connect('filmzi.db')
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO movies VALUES (NULL, ?, ?, ?, ?, ?)",
+                  (file_id, file_name, file_size, file_type, message_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        return False
+
+def search_movies(query):
+    conn = sqlite3.connect('filmzi.db')
+    c = conn.cursor()
+    search_term = f"%{query}%"
+    c.execute("SELECT * FROM movies WHERE file_name LIKE ? LIMIT 50", (search_term,))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_total_movies():
+    conn = sqlite3.connect('filmzi.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM movies")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def add_user(user_id, first_name, username):
+    try:
+        from datetime import datetime
+        conn = sqlite3.connect('filmzi.db')
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?)",
+                  (user_id, first_name, username, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error adding user: {e}")
+
+# Welcome messages
+WELCOME_TEXT = """ʜᴇʏ {}, ɢᴏᴏᴅ ᴍᴏʀɴɪɴɢ 🌞
+
+ɪ ᴀᴍ ᴛʜᴇ ᴍᴏsᴛ ᴘᴏᴡᴇʀғᴜʟ ᴀᴜᴛᴏ ғɪʟᴛᴇʀ ʙᴏᴛ ᴡɪᴛʜ ᴘʀᴇᴍɪᴜᴍ
 I ᴄᴀɴ ᴘʀᴏᴠɪᴅᴇ ᴍᴏᴠɪᴇs ᴊᴜsᴛ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ᴏʀ sᴇɴᴅ ᴍᴏᴠɪᴇ ɴᴀᴍᴇ ᴀɴᴅ ᴇɴᴊᴏʏ
+
 Nᴇᴇᴅ Pʀᴇᴍɪᴜᴍ 👉🏻 /plan"""
-        
-        keyboard = [
-            [InlineKeyboardButton("🔍 Search Movies", switch_inline_query_current_chat="")],
-            [InlineKeyboardButton("📊 Stats", callback_data="stats"),
-             InlineKeyboardButton("💎 Premium", callback_data="premium")]
+
+WELCOME_PHOTO = "https://ar-hosting.pages.dev/1759107724318.jpg"
+
+# Reactions for messages
+REACTIONS = ["👍", "❤️", "🔥", "🎉", "😍"]
+
+# Start command
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client, message: Message):
+    user = message.from_user
+    add_user(user.id, user.first_name, user.username)
+    
+    # Get user's first name
+    first_name = user.first_name
+    
+    buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎬 ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ 🎬", 
+                               url=f"https://t.me/{(await client.get_me()).username}?startgroup=true")
+        ],
+        [
+            InlineKeyboardButton("⭐ ᴛᴏᴘ sᴇᴀʀᴄʜɪɴɢ", callback_data="top_searching"),
+            InlineKeyboardButton("📢 ʜᴇʟᴘ", callback_data="help")
+        ],
+        [
+            InlineKeyboardButton("📚 ᴀʙᴏᴜᴛ", callback_data="about"),
+            InlineKeyboardButton("💰 ᴇᴀʀɴ ᴍᴏɴᴇʏ", callback_data="earn")
         ]
-        
-        try:
-            await update.message.reply_photo(
-                photo='https://ar-hosting.pages.dev/1759107724318.jpg',
-                caption=welcome_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='HTML'
-            )
-        except Exception as e:
-            logger.error(f"Error sending photo: {e}")
-            await update.message.reply_text(welcome_text, parse_mode='HTML')
+    ])
     
-    async def plan_command(self, update: Update, context: CallbackContext):
-        plan_text = """🎬 <b>Filmzi Premium Plans</b> 🎬
-
-<b>✨ Basic Plan</b>
-• Unlimited movie searches
-• HD quality downloads
-• Priority support
-• ₹99/month
-
-<b>🚀 Pro Plan</b>
-• All Basic features
-• 4K quality available
-• Early access to new releases
-• Multiple downloads
-• ₹199/month
-
-<b>💎 Enterprise Plan</b>
-• All Pro features
-• Custom requests
-• Dedicated support
-• Group access
-• ₹499/month
-
-To subscribe, contact @your_admin_username"""
-        
-        await update.message.reply_text(plan_text, parse_mode='HTML')
-    
-    async def stats_command(self, update: Update, context: CallbackContext):
-        cursor = db.conn.cursor()
-        
-        # Get total movies count
-        cursor.execute('SELECT COUNT(*) FROM movies')
-        total_movies = cursor.fetchone()[0]
-        
-        # Get total users count
-        cursor.execute('SELECT COUNT(*) FROM users')
-        total_users = cursor.fetchone()[0]
-        
-        # Get recent movies
-        cursor.execute('SELECT title FROM movies ORDER BY id DESC LIMIT 3')
-        recent_movies = [row[0] for row in cursor.fetchall()]
-        
-        stats_text = f"""📊 <b>Filmzi Bot Statistics</b>
-
-🎬 Total Movies: <b>{total_movies}</b>
-👥 Total Users: <b>{total_users}</b>
-⚡ Status: <b>Online</b>
-
-<b>Recent Movies:</b>
-"""
-        for i, movie in enumerate(recent_movies, 1):
-            stats_text += f"{i}. {movie}\n"
-        
-        stats_text += "\n💡 <i>Use /plan to upgrade to premium</i>"
-        
-        await update.message.reply_text(stats_text, parse_mode='HTML')
-    
-    async def debug_command(self, update: Update, context: CallbackContext):
-        """Debug command to check database status"""
-        cursor = db.conn.cursor()
-        
-        # Get all movies
-        cursor.execute('SELECT id, title, file_size, quality, year FROM movies ORDER BY id DESC LIMIT 10')
-        movies = cursor.fetchall()
-        
-        debug_text = f"🔧 <b>Debug Information</b>\n\n"
-        debug_text += f"📁 Total Movies: {len(movies)}\n\n"
-        
-        if movies:
-            debug_text += "<b>Recent Movies in DB:</b>\n"
-            for movie in movies:
-                movie_id, title, file_size, quality, year = movie
-                debug_text += f"• {title} ({year}) - {quality} - {file_size}\n"
-        else:
-            debug_text += "❌ No movies found in database!\n"
-            debug_text += "Check if channel monitor is running and can access your channel."
-        
-        await update.message.reply_text(debug_text, parse_mode='HTML')
-    
-    async def search_db_command(self, update: Update, context: CallbackContext):
-        """Search the database directly"""
-        if not context.args:
-            await update.message.reply_text("Usage: /searchdb <movie_name>")
-            return
-        
-        query = ' '.join(context.args)
-        cursor = db.conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM movies 
-            WHERE title LIKE ? 
-            ORDER BY id DESC
-        ''', (f'%{query}%',))
-        
-        results = cursor.fetchall()
-        
-        if not results:
-            await update.message.reply_text(f"❌ No results in DB for: <b>{query}</b>", parse_mode='HTML')
-            return
-        
-        response_text = f"🔍 <b>Database Results for:</b> {query}\n\n"
-        
-        for movie in results[:5]:
-            movie_id, title, file_id, file_size, quality, year, created_at = movie
-            response_text += f"🎬 <b>{title}</b>\n"
-            response_text += f"   📊 {quality} | 💾 {file_size} | 🗓️ {year}\n"
-            response_text += f"   🆔 {movie_id}\n\n"
-        
-        await update.message.reply_text(response_text, parse_mode='HTML')
-    
-    async def handle_search(self, update: Update, context: CallbackContext):
-        query = update.message.text
-        user_id = update.effective_user.id
-        
-        # Add to search history
-        db.add_search_history(user_id, query)
-        
-        # Search for movies
-        results = db.search_movies(query)
-        
-        if not results:
-            # Try fuzzy search
-            cursor = db.conn.cursor()
-            cursor.execute('''
-                SELECT * FROM movies 
-                WHERE title LIKE ? 
-                ORDER BY id DESC
-            ''', (f'%{query}%',))
-            results = cursor.fetchall()
-        
-        if not results:
-            await update.message.reply_text(
-                f"❌ No results found for: <b>{query}</b>\n\n"
-                f"Try with different keywords or check the spelling.\n"
-                f"Use /debug to check database status.",
-                parse_mode='HTML'
-            )
-            return
-        
-        # Format results
-        response_text = f"🎬 <b>Search Results for:</b> {query}\n"
-        response_text += f"📁 <b>Total Files:</b> {len(results)}\n"
-        response_text += f"⚡ <b>Result in:</b> 0.5 seconds\n\n"
-        
-        keyboard = []
-        for movie in results[:5]:  # Show first 5 results
-            movie_id, title, file_id, file_size, quality, year, created_at = movie
-            response_text += f"✅ {title} ({year})\n"
-            response_text += f"   🎞️ {quality} | 💾 {file_size}\n\n"
-            
-            keyboard.append([InlineKeyboardButton(
-                f"📥 Download {quality}",
-                callback_data=f"download_{movie_id}"
-            )])
-        
-        response_text += "🔍 <i>Click the buttons below to download</i>"
-        
-        await update.message.reply_text(
-            response_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='HTML'
+    try:
+        await message.reply_photo(
+            photo=WELCOME_PHOTO,
+            caption=WELCOME_TEXT.format(first_name),
+            reply_markup=buttons
         )
+    except:
+        await message.reply_text(
+            text=WELCOME_TEXT.format(first_name),
+            reply_markup=buttons
+        )
+
+# Auto-filter for private chat
+@app.on_message(filters.private & filters.text & ~filters.command(['start', 'plan', 'help']))
+async def auto_filter_private(client, message: Message):
+    query = message.text
+    user = message.from_user
     
-    async def handle_callback(self, update: Update, context: CallbackContext):
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        
-        if data.startswith('download_'):
-            movie_id = data.split('_')[1]
-            await self.send_movie_file(query, movie_id)
-        elif data == 'stats':
-            await self.stats_callback(query)
-        elif data == 'premium':
-            await self.plan_callback(query)
+    # Add user to database
+    add_user(user.id, user.first_name, user.username)
     
-    async def send_movie_file(self, query, movie_id):
-        # Get movie details from database
-        cursor = db.conn.cursor()
-        cursor.execute('SELECT * FROM movies WHERE id = ?', (movie_id,))
-        movie = cursor.fetchone()
+    # Send searching message
+    search_msg = await message.reply_text(f"🔍 sᴇᴀʀᴄʜɪɴɢ {query}")
+    
+    # Search in database
+    results = search_movies(query)
+    
+    if not results:
+        await search_msg.edit_text(
+            f"❌ ɴᴏ ʀᴇsᴜʟᴛs ғᴏᴜɴᴅ ғᴏʀ '{query}'\n\n"
+            "ᴘʟᴇᴀsᴇ ᴛʀʏ:\n"
+            "• ᴄʜᴇᴄᴋɪɴɢ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ\n"
+            "• ᴜsɪɴɢ ᴅɪғғᴇʀᴇɴᴛ ᴋᴇʏᴡᴏʀᴅs"
+        )
+        return
+    
+    await search_msg.delete()
+    
+    # Prepare results display
+    buttons = []
+    for idx, movie in enumerate(results[:10], 1):
+        file_name = movie[2]
+        file_id = movie[1]
+        buttons.append([InlineKeyboardButton(
+            f"📁 {file_name}",
+            callback_data=f"file_{file_id}"
+        )])
+    
+    buttons.append([
+        InlineKeyboardButton("🚫 ᴄʟᴏsᴇ 🚫", callback_data="close")
+    ])
+    
+    total = len(results)
+    await message.reply_text(
+        f"🎯 ᴛɪᴛʟᴇ : {query}\n"
+        f"📊 ᴛᴏᴛᴀʟ ғɪʟᴇs : {total}\n"
+        f"📝 ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ : {user.mention}\n"
+        f"⏱️ ʀᴇsᴜʟᴛ ɪɴ : 0.5 sᴇᴄᴏɴᴅs\n\n"
+        f"🌳 ʀᴇǫᴜᴇsᴛᴇᴅ ғɪʟᴇs 👇",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+# Auto-filter for groups
+@app.on_message(filters.group & filters.text & ~filters.command(['start']))
+async def auto_filter_group(client, message: Message):
+    query = message.text
+    
+    # Search in database
+    results = search_movies(query)
+    
+    if not results:
+        return
+    
+    # Send searching message
+    search_msg = await message.reply_text(f"🔍 sᴇᴀʀᴄʜɪɴɢ {query}")
+    
+    await asyncio.sleep(0.5)
+    await search_msg.delete()
+    
+    # Prepare results display
+    buttons = []
+    for idx, movie in enumerate(results[:10], 1):
+        file_name = movie[2]
+        file_id = movie[1]
+        buttons.append([InlineKeyboardButton(
+            f"📁 {file_name}",
+            callback_data=f"file_{file_id}"
+        )])
+    
+    buttons.append([
+        InlineKeyboardButton("🚫 ᴄʟᴏsᴇ 🚫", callback_data="close")
+    ])
+    
+    total = len(results)
+    await message.reply_text(
+        f"🎯 ᴛɪᴛʟᴇ : {query}\n"
+        f"📊 ᴛᴏᴛᴀʟ ғɪʟᴇs : {total}\n"
+        f"📝 ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ : {message.from_user.mention}\n"
+        f"⏱️ ʀᴇsᴜʟᴛ ɪɴ : 0.5 sᴇᴄᴏɴᴅs\n\n"
+        f"🌳 ʀᴇǫᴜᴇsᴛᴇᴅ ғɪʟᴇs 👇",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+# Handle file callback
+@app.on_callback_query(filters.regex(r"^file_"))
+async def send_file(client, callback_query: CallbackQuery):
+    file_id = callback_query.data.split("_")[1]
+    
+    try:
+        # Get file info
+        conn = sqlite3.connect('filmzi.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM movies WHERE file_id = ?", (file_id,))
+        movie = c.fetchone()
+        conn.close()
         
         if not movie:
-            await query.edit_message_text("❌ Movie not found in database!")
+            await callback_query.answer("❌ ғɪʟᴇ ɴᴏᴛ ғᴏᴜɴᴅ!", show_alert=True)
             return
         
-        movie_id, title, file_id, file_size, quality, year, created_at = movie
+        file_name = movie[2]
+        message_id = movie[5]
         
+        # Get the file from channel
         try:
-            # Send the movie file
-            await query.message.reply_document(
-                document=file_id,
-                caption=f"""🎬 <b>{title}</b>
-
-📊 Quality: {quality}
-💾 Size: {file_size}
-🗓️ Year: {year}
-
-<b>⚠️ IMPORTANT:</b>
-• File will be deleted in 10 minutes due to copyright
-• Forward this file to saved messages immediately
-• Use VLC Media Player for best experience
-
-<b>🎉 Enjoy your movie!</b>""",
-                parse_mode='HTML'
+            file_msg = await client.get_messages(CHANNEL_ID, message_id)
+            
+            # Create buttons
+            buttons = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🚀 ғᴀsᴛ ᴅᴏᴡɴʟᴏᴀᴅ 🚀", callback_data=f"download_{file_id}"),
+                    InlineKeyboardButton("📺 ᴡᴀᴛᴄʜ ᴏɴʟɪɴᴇ 📺", callback_data=f"stream_{file_id}")
+                ],
+                [
+                    InlineKeyboardButton("📢 ᴊᴏɪɴ ᴜᴘᴅᴀᴛᴇs ᴄʜᴀɴɴᴇʟ 📢", url="https://t.me/your_channel")
+                ]
+            ])
+            
+            # Send file with caption
+            caption = (
+                f"📁 {file_name}\n\n"
+                f"⚡ Pᴏᴡᴇʀᴇᴅ Bʏ : [BotzWala]\n\n"
+                f"Iғ Yᴏᴜ Aʀᴇ Fᴀᴄɪɴɢ Aɴʏ Sᴏᴜɴᴅ Issᴜᴇ\n"
+                f"Tʜᴇɴ ᴜsᴇ ᴀ VLC Mᴇᴅɪᴀ Pʟᴀʏᴇʀ"
             )
             
-            # Edit original message to show success
-            await query.edit_message_text(
-                f"✅ <b>Download started for:</b> {title}\n\n"
-                f"📊 <b>Quality:</b> {quality}\n"
-                f"💾 <b>Size:</b> {file_size}\n\n"
-                f"<i>Check above message for download link!</i>",
-                parse_mode='HTML'
+            if file_msg.video:
+                await callback_query.message.reply_video(
+                    video=file_msg.video.file_id,
+                    caption=caption,
+                    reply_markup=buttons
+                )
+            elif file_msg.document:
+                await callback_query.message.reply_document(
+                    document=file_msg.document.file_id,
+                    caption=caption,
+                    reply_markup=buttons
+                )
+            
+            # Send auto-delete warning
+            warning_msg = await callback_query.message.reply_text(
+                "❗❗❗ IMPORTANT ❗❗❗\n\n"
+                "THIS MOVIE FILE/VIDEO WILL BE DELETED IN 10 MINUTE 😬 "
+                "(DUE TO COPYRIGHT ISSUES).\n\n"
+                "PLEASE FORWARD THIS FILE TO SOMEWHERE ELSE AND START DOWNLOADING THERE"
             )
+            
+            # Delete warning after 2 minutes
+            await asyncio.sleep(120)
+            try:
+                await warning_msg.delete()
+            except:
+                pass
+            
+            # React to the callback
+            try:
+                await callback_query.message.react(random.choice(REACTIONS))
+            except:
+                pass
+            
+            await callback_query.answer("✅ ғɪʟᴇ sᴇɴᴛ!")
             
         except Exception as e:
             logger.error(f"Error sending file: {e}")
-            await query.edit_message_text(
-                f"❌ Error sending file: {str(e)}\n\nPlease try again later."
-            )
+            await callback_query.answer("❌ ᴇʀʀᴏʀ sᴇɴᴅɪɴɢ ғɪʟᴇ!", show_alert=True)
+            
+    except Exception as e:
+        logger.error(f"Callback error: {e}")
+        await callback_query.answer("❌ sᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ!", show_alert=True)
+
+# Handle download callback
+@app.on_callback_query(filters.regex(r"^download_"))
+async def generate_download_link(client, callback_query: CallbackQuery):
+    file_id = callback_query.data.split("_")[1]
     
-    async def stats_callback(self, query):
-        cursor = db.conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM movies')
-        total_movies = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM users')
-        total_users = cursor.fetchone()[0]
-        
-        stats_text = f"""📊 <b>Filmzi Bot Statistics</b>
-
-🎬 Total Movies: <b>{total_movies}</b>
-👥 Total Users: <b>{total_users}</b>
-⚡ Status: <b>Online</b>
-
-💡 <i>Use /plan to upgrade to premium</i>"""
-        
-        await query.edit_message_text(stats_text, parse_mode='HTML')
+    # Simulate link generation
+    await callback_query.answer("🔗 ɢᴇɴᴇʀᴀᴛɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ ʟɪɴᴋ...", show_alert=True)
     
-    async def plan_callback(self, query):
-        plan_text = """🎬 <b>Filmzi Premium Plans</b> 🎬
+    # Send link generated message
+    await callback_query.message.reply_text(
+        "👁️ LINK GENERATED ☠️⚔️\n\n"
+        "⚡ Fast Download Link: [Click Here](https://example.com/download)\n\n"
+        "Note: Link expires in 24 hours"
+    )
 
-<b>✨ Basic Plan</b>
-• Unlimited movie searches
-• HD quality downloads
-• Priority support
-• ₹99/month
+# Handle stream callback
+@app.on_callback_query(filters.regex(r"^stream_"))
+async def generate_stream_link(client, callback_query: CallbackQuery):
+    file_id = callback_query.data.split("_")[1]
+    
+    await callback_query.answer("🎬 ɢᴇɴᴇʀᴀᴛɪɴɢ sᴛʀᴇᴀᴍ ʟɪɴᴋ...", show_alert=True)
+    
+    # Send stream link
+    await callback_query.message.reply_text(
+        "📺 STREAM LINK GENERATED\n\n"
+        "🎥 Watch Online: [Click Here](https://example.com/stream)\n\n"
+        "Powered by Plyr Player"
+    )
 
-To subscribe, contact @your_admin_username"""
+# Other callbacks
+@app.on_callback_query(filters.regex(r"^(close|help|about|earn|top_searching)$"))
+async def handle_callbacks(client, callback_query: CallbackQuery):
+    data = callback_query.data
+    
+    if data == "close":
+        await callback_query.message.delete()
+        await callback_query.answer("ᴄʟᴏsᴇᴅ!")
+    
+    elif data == "help":
+        await callback_query.answer(
+            "📢 Help\n\n"
+            "Just send movie name and I'll send you the files!\n"
+            "Add me to your group for auto-filter.",
+            show_alert=True
+        )
+    
+    elif data == "about":
+        total_movies = get_total_movies()
+        await callback_query.answer(
+            f"ℹ️ About\n\n"
+            f"Bot: Filmzi Movie Bot\n"
+            f"Total Movies: {total_movies}\n"
+            f"Developer: @BotzWala",
+            show_alert=True
+        )
+    
+    elif data == "earn":
+        await callback_query.answer(
+            "💰 Earn Money\n\n"
+            "Refer friends and earn rewards!",
+            show_alert=True
+        )
+    
+    elif data == "top_searching":
+        await callback_query.answer(
+            "⭐ Top Searching Movies\n\n"
+            "Coming Soon!",
+            show_alert=True
+        )
+
+# Channel post handler (for indexing)
+@app.on_message(filters.channel & (filters.video | filters.document))
+async def index_files(client, message: Message):
+    if message.chat.id != CHANNEL_ID:
+        return
+    
+    try:
+        if message.video:
+            file_id = message.video.file_id
+            file_name = message.video.file_name or "Unknown"
+            file_size = message.video.file_size
+            file_type = "video"
+        elif message.document:
+            file_id = message.document.file_id
+            file_name = message.document.file_name or "Unknown"
+            file_size = message.document.file_size
+            file_type = "document"
+        else:
+            return
         
-        await query.edit_message_text(plan_text, parse_mode='HTML')
+        message_id = message.id
+        
+        # Add to database
+        if add_movie(file_id, file_name, file_size, file_type, message_id):
+            logger.info(f"Indexed: {file_name}")
+    
+    except Exception as e:
+        logger.error(f"Indexing error: {e}")
 
-    def run(self):
-        logger.info("Starting Filmzi Bot...")
-        self.application.run_polling()
-
-if __name__ == '__main__':
-    bot = FilmziBot()
-    bot.run()
+# Main function
+if __name__ == "__main__":
+    # Initialize database
+    init_db()
+    
+    logger.info("Bot started successfully!")
+    logger.info("Initializing Filmzi Bot...")
+    
+    # Run the bot
+    app.run()
